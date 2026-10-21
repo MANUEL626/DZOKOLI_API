@@ -1,0 +1,78 @@
+name: Supabase Backup to Drive
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+      timezone: "Africa/Lome"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supabase-production-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+      N8N_WEBHOOK_URL: ${{ secrets.N8N_WEBHOOK_URL }}
+      N8N_WEBHOOK_USERNAME: ${{ secrets.N8N_WEBHOOK_USERNAME }}
+      N8N_WEBHOOK_PASSWORD: ${{ secrets.N8N_WEBHOOK_PASSWORD }}
+
+    steps:
+      - name: Validate required secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SUPABASE_DB_URL" || { echo "SUPABASE_DB_URL is missing" >&2; exit 1; }
+          test -n "$N8N_WEBHOOK_URL" || { echo "N8N_WEBHOOK_URL is missing" >&2; exit 1; }
+          test -n "$N8N_WEBHOOK_USERNAME" || { echo "N8N_WEBHOOK_USERNAME is missing" >&2; exit 1; }
+          test -n "$N8N_WEBHOOK_PASSWORD" || { echo "N8N_WEBHOOK_PASSWORD is missing" >&2; exit 1; }
+
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Dump and compress database
+        id: dump
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          timestamp="$(date -u +'%Y-%m-%d_%H%M%S')"
+          archive="supabase-backup-${timestamp}.tar.gz"
+          mkdir -p backup
+
+          supabase db dump --db-url "$SUPABASE_DB_URL" -f backup/roles.sql --role-only
+          supabase db dump --db-url "$SUPABASE_DB_URL" -f backup/schema.sql
+          supabase db dump --db-url "$SUPABASE_DB_URL" -f backup/data.sql --data-only --use-copy
+
+          tar -czf "$archive" -C backup roles.sql schema.sql data.sql
+          test -s "$archive"
+
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+
+      - name: Send backup to n8n webhook
+        shell: bash
+        env:
+          ARCHIVE: ${{ steps.dump.outputs.archive }}
+        run: |
+          set -euo pipefail
+          curl --silent --show-error --fail-with-body \
+            --retry 3 \
+            --retry-all-errors \
+            --connect-timeout 20 \
+            --max-time 600 \
+            --request POST "$N8N_WEBHOOK_URL" \
+            --user "$N8N_WEBHOOK_USERNAME:$N8N_WEBHOOK_PASSWORD" \
+            --form "data=@${ARCHIVE};type=application/gzip"
+
+      - name: Clean up local backup
+        if: always()
+        shell: bash
+        run: rm -rf backup supabase-backup-*.tar.gz

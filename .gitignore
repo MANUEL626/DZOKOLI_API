@@ -1,0 +1,17 @@
+.env
+.env.prod
+.env.dev
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+.venv
+.idea
+
+.idea/
+.idea*
+
+supabase/.temp/
+monetra-api-docker-image.zip
+monetra-api.tar

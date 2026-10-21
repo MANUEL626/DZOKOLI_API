@@ -1,0 +1,1 @@
+"""Published baggage capacity feature."""
